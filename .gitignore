@@ -1,0 +1,25 @@
+# 相依套件（npm install 會重新產生）
+node_modules/
+
+# Build 輸出
+dist/
+
+# 環境變數（若未來加入請勿上傳）
+.env
+.env.local
+.env.*.local
+
+# 編輯器設定
+.vscode/settings.json
+.idea/
+
+# 系統檔案
+.DS_Store
+Thumbs.db
+
+# 日誌
+*.log
+npm-debug.log*
+
+# TypeScript 快取
+*.tsbuildinfo
