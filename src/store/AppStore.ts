@@ -6,6 +6,7 @@ interface AppStoreState {
   messages: Message[]
   recordingState: RecordingState
   appError: AppErrorType
+  errorDetail: string | null
   sessionStartTime: number | null
   /** 佇列中尚未處理完畢的 blob 數量（可觀測性，0 = 無遺失風險） */
   pendingCount: number
@@ -14,7 +15,7 @@ interface AppStoreState {
   addMessage: (msg: Omit<Message, 'id' | 'timestamp' | 'capturedEndAt'>, capturedAt?: number, capturedEndAt?: number) => string
   updateMessage: (id: string, patch: Partial<Message>) => void
   setRecordingState: (state: RecordingState) => void
-  setAppError: (err: AppErrorType) => void
+  setAppError: (err: AppErrorType, detail?: string) => void
   clearMessages: () => void
   startSession: () => void
   addPending: () => void
@@ -28,6 +29,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   messages: [],
   recordingState: 'idle',
   appError: null,
+  errorDetail: null,
   sessionStartTime: null,
   pendingCount: 0,
 
@@ -52,11 +54,11 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   setRecordingState: (state) => set({ recordingState: state }),
 
-  setAppError: (err) => set({ appError: err }),
+  setAppError: (err, detail) => set({ appError: err, errorDetail: detail ?? null }),
 
   clearMessages: () => set({ messages: [], sessionStartTime: null, pendingCount: 0 }),
 
-  startSession: () => set({ sessionStartTime: Date.now(), messages: [], pendingCount: 0 }),
+  startSession: () => set({ sessionStartTime: Date.now(), messages: [], pendingCount: 0, appError: null, errorDetail: null }),
 
   addPending: () => set((s) => ({ pendingCount: s.pendingCount + 1 })),
   removePending: () => set((s) => ({ pendingCount: Math.max(0, s.pendingCount - 1) })),

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useConfigStore } from '../../store/ConfigStore'
 import { CryptoService } from '../../services/CryptoService'
 import { GroqService } from '../../services/GroqService'
@@ -9,8 +9,9 @@ import {
   GROQ_STT_MODELS, GROQ_LLM_MODELS,
   OPENAI_STT_MODELS, OPENAI_LLM_MODELS,
   GROQ_API_BASE, OPENAI_API_BASE,
+  OPENAI_REALTIME_MODELS,
 } from '../../utils/constants'
-import { ApiProvider } from '../../types'
+import { ApiProvider, SttMode } from '../../types'
 
 interface SettingModalProps {
   onClose: () => void
@@ -35,24 +36,41 @@ export function SettingModal({ onClose }: SettingModalProps) {
   const sttModels = provider === 'openai' ? OPENAI_STT_MODELS : GROQ_STT_MODELS
   const llmModels = provider === 'openai' ? OPENAI_LLM_MODELS : GROQ_LLM_MODELS
 
-  const [sttModel, setSttModel] = useState(config.modelSettings.sttModel)
-  const [llmModel, setLlmModel] = useState(config.modelSettings.llmModel)
+  // 每個供應商各自記憶模型選擇，切換時互不干擾
+  const savedStt = config.modelSettings.sttModel
+  const savedLlm = config.modelSettings.llmModel
+  const [groqSttModel, setGroqSttModel] = useState(() =>
+    GROQ_STT_MODELS.some((m) => m.value === savedStt) ? savedStt : GROQ_STT_MODELS[0].value
+  )
+  const [openaiSttModel, setOpenaiSttModel] = useState(() =>
+    OPENAI_STT_MODELS.some((m) => m.value === savedStt) ? savedStt : OPENAI_STT_MODELS[0].value
+  )
+  const [groqLlmModel, setGroqLlmModel] = useState(() =>
+    GROQ_LLM_MODELS.some((m) => m.value === savedLlm) ? savedLlm : GROQ_LLM_MODELS[0].value
+  )
+  const [openaiLlmModel, setOpenaiLlmModel] = useState(() =>
+    OPENAI_LLM_MODELS.some((m) => m.value === savedLlm) ? savedLlm : OPENAI_LLM_MODELS[0].value
+  )
 
-  // 切換 provider 時重設模型為該 provider 的預設
-  useEffect(() => {
-    if (provider === 'openai') {
-      setSttModel(OPENAI_STT_MODELS[0].value)
-      setLlmModel(OPENAI_LLM_MODELS[0].value)
-    } else {
-      setSttModel(GROQ_STT_MODELS[0].value)
-      setLlmModel(GROQ_LLM_MODELS[0].value)
-    }
+  // 依目前 provider 取得對應的模型 state
+  const sttModel    = provider === 'openai' ? openaiSttModel : groqSttModel
+  const setSttModel = provider === 'openai' ? setOpenaiSttModel : setGroqSttModel
+  const llmModel    = provider === 'openai' ? openaiLlmModel : groqLlmModel
+  const setLlmModel = provider === 'openai' ? setOpenaiLlmModel : setGroqLlmModel
+
+  const [sttMode, setSttMode] = useState<SttMode>(() => config.sttMode ?? 'standard')
+  const [realtimeModel, setRealtimeModel] = useState(() => config.realtimeModel ?? OPENAI_REALTIME_MODELS[0].value)
+  const [sttPrompt, setSttPrompt] = useState(() => config.sttPrompt ?? '')
+
+  // 切換 provider 時只改 provider，各自的模型狀態完整保留
+  const handleProviderChange = (newProvider: ApiProvider) => {
+    setProvider(newProvider)
     setTestState('idle')
     setTestMsg('')
-  }, [provider])
+  }
 
-  const hasGroqKey = Boolean(getApiKey())
-  const hasOpenAiKey = Boolean(getOpenAiKey())
+  const hasGroqKey = Boolean(getApiKey()) || Boolean(groqKeyInput)
+  const hasOpenAiKey = Boolean(getOpenAiKey()) || Boolean(openaiKeyInput)
 
   const handleSave = () => {
     if (groqKeyInput) setApiKey(groqKeyInput)
@@ -61,6 +79,9 @@ export function SettingModal({ onClose }: SettingModalProps) {
       provider,
       systemPrompt: customPrompt,
       modelSettings: { sttModel, llmModel },
+      sttPrompt,
+      sttMode,
+      realtimeModel,
     })
     setSaved(true)
     setTimeout(() => { setSaved(false); onClose() }, 800)
@@ -104,7 +125,7 @@ export function SettingModal({ onClose }: SettingModalProps) {
             {(['groq', 'openai'] as ApiProvider[]).map((p) => (
               <button
                 key={p}
-                onClick={() => setProvider(p)}
+                onClick={() => handleProviderChange(p)}
                 className={`flex-1 py-2 font-medium transition-colors ${
                   provider === p
                     ? 'bg-blue-600 text-white'
@@ -195,6 +216,74 @@ export function SettingModal({ onClose }: SettingModalProps) {
           </div>
         </div>
 
+        {/* ─── STT 提示詞與切段長度 ───────────────────────── */}
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-gray-600">語音段落最大長度：{config.vadMaxDurationMs} ms</label>
+          <Input
+            type="range"
+            min={5000}
+            max={40000}
+            step={1000}
+            value={config.vadMaxDurationMs}
+            onChange={(e) => updateConfig({ vadMaxDurationMs: Number(e.target.value) })}
+            className="accent-blue-600"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-gray-600">STT Prompt（專有名詞/術語）</label>
+          <textarea
+            rows={3}
+            value={sttPrompt}
+            onChange={(e) => setSttPrompt(e.target.value)}
+            placeholder="可輸入專有名詞，例如：OmniTranslate, NVMe, 保哥, GPT-4o"
+            className="rounded-lg border border-gray-300 px-3 py-2 text-xs font-mono outline-none focus:border-blue-500 resize-none"
+          />
+        </div>
+
+        {/* ─── STT 模式切換 ────────────────────────────── */}
+        <div className="flex flex-col gap-2">
+          <label className="text-xs font-medium text-gray-600">語音辨識模式</label>
+          <div className="flex rounded-lg border border-gray-300 overflow-hidden text-sm">
+            {([
+              { value: 'standard', label: '標準模式（Whisper REST）' },
+              { value: 'openai-realtime', label: '即時模式（OpenAI Realtime）' },
+            ] as { value: SttMode; label: string }[]).map((m) => (
+              <button
+                key={m.value}
+                type="button"
+                onClick={() => setSttMode(m.value)}
+                className={`flex-1 py-2 text-xs font-medium transition-colors ${
+                  sttMode === m.value
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          {sttMode === 'openai-realtime' && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-blue-200 bg-blue-50 p-3">
+              <p className="text-xs text-blue-700 font-medium">⚡ 即時模式：WebRTC 串流，伺服器端 VAD，延遲 ~200ms</p>
+              <p className="text-xs text-blue-600">需要 OpenAI API Key，翻譯仍使用 GROQ 模型</p>
+              <label className="text-xs font-medium text-gray-600 mt-1">辨識模型</label>
+              <select
+                value={realtimeModel}
+                onChange={(e) => setRealtimeModel(e.target.value)}
+                className="rounded-lg border border-gray-300 px-2 py-1.5 text-xs outline-none focus:border-blue-500"
+              >
+                {OPENAI_REALTIME_MODELS.map((m) => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+              {!hasOpenAiKey && (
+                <p className="text-xs text-red-500">⚠ 請先輸入 OpenAI API Key</p>
+              )}
+              <p className="text-xs text-blue-600">提示：可透過「靜音斷句閾值」調整即時輸出節奏</p>
+            </div>
+          )}
+        </div>
         {/* ─── System Prompt ───────────────────────────────── */}
         <div className="flex flex-col gap-1">
           <label className="text-xs font-medium text-gray-600">翻譯 Prompt 模板</label>
@@ -227,6 +316,53 @@ export function SettingModal({ onClose }: SettingModalProps) {
           onChange={(e) => updateConfig({ vadSilenceMs: Number(e.target.value) })}
           className="accent-blue-600"
         />
+
+        {/* ─── 會議可讀模式（兩種 STT 模式共用）──────────────── */}
+        <div className="flex flex-col gap-2 rounded-lg border border-gray-200 px-4 py-3 bg-gray-50">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-800">會議可讀模式</p>
+              <p className="text-xs text-gray-500 mt-0.5">輸出前做短句合併與過短片段過濾，不影響原始辨識</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={config.meetingReadableMode}
+              onClick={() => updateConfig({ meetingReadableMode: !config.meetingReadableMode })}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                config.meetingReadableMode ? 'bg-blue-600' : 'bg-gray-300'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  config.meetingReadableMode ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          <Input
+            label={`短句合併間隔：${config.readabilityMergeGapMs} ms`}
+            type="range"
+            min={300}
+            max={3000}
+            step={100}
+            value={config.readabilityMergeGapMs}
+            onChange={(e) => updateConfig({ readabilityMergeGapMs: Number(e.target.value) })}
+            className="accent-blue-600"
+          />
+
+          <Input
+            label={`最小顯示字數：${config.readabilityMinChars}`}
+            type="range"
+            min={1}
+            max={12}
+            step={1}
+            value={config.readabilityMinChars}
+            onChange={(e) => updateConfig({ readabilityMinChars: Number(e.target.value) })}
+            className="accent-blue-600"
+          />
+        </div>
 
         {/* ─── 翻譯開關 ────────────────────────────────────── */}
         <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3 bg-gray-50">

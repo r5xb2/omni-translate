@@ -13,10 +13,11 @@ export const GROQ_STT_MODELS = [
   { label: 'Distil Whisper（英文最快）', value: 'distil-whisper-large-v3-en' },
 ]
 export const GROQ_LLM_MODELS = [
-  { label: 'Llama 3.3 70B（預設，均衡）', value: 'llama-3.3-70b-versatile' },
-  { label: 'Llama 3.1 8B（最快）', value: 'llama-3.1-8b-instant' },
-  { label: 'Gemma 2 9B', value: 'gemma2-9b-it' },
-  { label: 'Mixtral 8x7B', value: 'mixtral-8x7b-32768' },
+  { label: 'Llama 3.3 70B（預設，均衡）',    value: 'llama-3.3-70b-versatile' },
+  { label: 'GPT-OSS 120B（高品質，500T/s）', value: 'openai/gpt-oss-120b' },
+  { label: 'GPT-OSS 20B（極速，1000T/s）',   value: 'openai/gpt-oss-20b' },
+  { label: 'Llama 3.1 8B（最快輕量）',        value: 'llama-3.1-8b-instant' },
+  { label: 'Gemma 2 9B',                      value: 'gemma2-9b-it' },
 ]
 export const OPENAI_STT_MODELS = [
   { label: 'Whisper-1', value: 'whisper-1' },
@@ -37,6 +38,22 @@ export const DEFAULT_ROLLING_CONTEXT_SIZE = 5
 
 // ─── 功能開關預設值 ────────────────────────────────────────────
 export const DEFAULT_ENABLE_TRANSLATION = true
+export const DEFAULT_STT_PROMPT = ''
+export const DEFAULT_MEETING_READABLE_MODE = false
+export const DEFAULT_READABILITY_MERGE_GAP_MS = 1200
+export const DEFAULT_READABILITY_MIN_CHARS = 1
+export const DEFAULT_STT_MODE = 'standard' as const
+export const DEFAULT_REALTIME_MODEL = 'gpt-realtime-whisper'
+
+// ─── OpenAI Realtime 模型清單 ──────────────────────────────────
+export const OPENAI_REALTIME_MODELS = [
+  { label: 'GPT-Realtime-Whisper（串流即時轉寫，推薦）', value: 'gpt-realtime-whisper' },
+  { label: 'GPT-4o Transcribe（高精度）',               value: 'gpt-4o-transcribe' },
+  { label: 'GPT-4o Mini Transcribe（較快）',            value: 'gpt-4o-mini-transcribe' },
+]
+
+// ─── OpenAI Realtime WebSocket 端點 ───────────────────────────
+export const OPENAI_REALTIME_BASE = 'wss://api.openai.com/v1/realtime'
 
 // ─── LocalStorage Key ──────────────────────────────────────────
 export const STORAGE_KEY = 'omni-translate-config'

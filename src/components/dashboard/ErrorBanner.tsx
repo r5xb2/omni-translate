@@ -7,17 +7,24 @@ const ERROR_MESSAGES: Record<NonNullable<AppErrorType>, string> = {
   network_offline:  '📡 網路中斷，正在保護您的錄音，請確認網路後繼續。',
   mic_denied:       '🎙️ 麥克風權限遭拒，請點擊瀏覽器網址列左側圖示授予麥克風權限。',
   groq_server_error:'🔧 GROQ 服務暫時異常，已自動重試，若持續發生請稍後再試。',
+  realtime_error:   '📡 OpenAI Realtime 連線異常，請確認 OpenAI API Key 與網路，或改回標準模式。',
 }
 
 export function ErrorBanner() {
   const appError = useAppStore((s) => s.appError)
+  const errorDetail = useAppStore((s) => s.errorDetail)
   const setAppError = useAppStore((s) => s.setAppError)
 
   if (!appError) return null
 
   return (
     <div className="flex items-start justify-between gap-3 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800">
-      <span>{ERROR_MESSAGES[appError]}</span>
+      <div className="flex flex-col gap-1">
+        <span>{ERROR_MESSAGES[appError]}</span>
+        {errorDetail && (
+          <span className="text-xs font-mono text-amber-700 opacity-80">{errorDetail}</span>
+        )}
+      </div>
       <button
         onClick={() => setAppError(null)}
         aria-label="關閉提示"

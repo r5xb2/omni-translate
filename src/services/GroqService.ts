@@ -64,12 +64,15 @@ export const GroqService = {
     apiKey: string,
     sttModel: string,
     apiBase = GROQ_API_BASE,
+    sttPrompt = '',
   ): Promise<string> {
     return withRetry(async () => {
       const formData = new FormData()
       formData.append('file', blob, 'audio.wav')
       formData.append('model', sttModel)
-      formData.append('language', 'en')
+      if (sttPrompt.trim()) {
+        formData.append('prompt', sttPrompt.trim())
+      }
       formData.append('response_format', 'json')
 
       const res = await fetch(`${apiBase}/audio/transcriptions`, {

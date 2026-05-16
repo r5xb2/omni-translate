@@ -1,6 +1,9 @@
 // ─── API 提供商 ────────────────────────────────────────────────
 export type ApiProvider = 'groq' | 'openai'
 
+// ─── STT 模式 ─────────────────────────────────────────────────
+export type SttMode = 'standard' | 'openai-realtime'
+
 // ─── 翻譯訊息實體 ─────────────────────────────────────────────
 export interface Message {
   id: string
@@ -29,7 +32,20 @@ export interface AppConfig {
     sttModel: string
     llmModel: string
   }  /** 是否啟用 LLM 翻譯步驟；關閉時僅執行 STT 轉文字 */
-  enableTranslation: boolean}
+  enableTranslation: boolean
+  /** STT 專有名詞/提示詞（可輸入產品名、人名、縮寫） */
+  sttPrompt: string
+  /** 會議可讀模式：對輸出做合併與過濾（不影響原始辨識） */
+  meetingReadableMode: boolean
+  /** 會議可讀模式：短句合併間隔（ms） */
+  readabilityMergeGapMs: number
+  /** 會議可讀模式：最小顯示字數（過短片段可過濾） */
+  readabilityMinChars: number
+  /** STT 模式：standard = Whisper REST，openai-realtime = WS 串流即時辨識 */
+  sttMode: SttMode
+  /** Realtime 模式使用的辨識模型 */
+  realtimeModel: string
+}
 
 // ─── 導出用的會議 Session ──────────────────────────────────────
 export interface ExportSession {
@@ -54,5 +70,4 @@ export type AppErrorType =
   | 'invalid_key'
   | 'network_offline'
   | 'mic_denied'
-  | 'groq_server_error'
-  | null
+  | 'groq_server_error'  | 'realtime_error'  | null

@@ -1,93 +1,96 @@
-# GitHub Copilot 行為指令
-# 改編自 Karpathy 12 條規則 (錯誤率 41% → 3%)
-# 放置路徑：.github/copilot-instructions.md
+# GitHub Copilot Instructions
+
+Behavioral guidelines to reduce common LLM coding mistakes. For trivial tasks, use judgment.
 
 ---
 
-## 核心規則（Karpathy 原始 4 條）
+## 1. Think Before Coding
+**Don't assume. Surface tradeoffs before implementing.**
+- State assumptions explicitly. If uncertain, ask first.
+- If multiple interpretations exist, present them — don't pick silently.
+- If simpler approach exists, say so.
 
-### 規則 1：編碼前先思考
-- 不要在沒有說明的情況下做出假設
-- 遇到不確定的地方，先列出你的假設再繼續
-- 存在更簡單的方案時，主動提出替代方案
-- 在猜測之前先說明你的理解是否正確
+*The test: Could you explain your assumptions before writing a single line?*
 
-### 規則 2：簡單優先
-- 用能解決問題的最少程式碼
-- 不要新增「以後可能會用到」的功能
-- 不要為一次性腳本設計抽象介面或基底類別
-- 如果一位資深工程師會覺得過度複雜，就應該簡化
+## 2. Simplicity First
+**Minimum code that solves the problem. Nothing speculative.**
+- No features, abstractions, or error handling beyond what was asked.
+- If you write 200 lines and it could be 50, rewrite it.
 
-### 規則 3：外科手術式修改
-- 只修改必須修改的部分
-- 不要順手「順便最佳化」相鄰程式碼、註解或格式
-- 不要重構沒有壞掉的東西
-- 保持與現有程式碼風格一致，不要引入新風格
+*The test: Would a senior engineer say this is overcomplicated? If yes, simplify.*
 
-### 規則 4：以目標為導向執行
-- 先定義「什麼樣的結果算成功」
-- 不要逐步告訴我每一步怎麼做，告訴我目標，自己驗證並迭代
-- 每次提案都要說明：這樣做是否達成原始目標？
+## 3. Surgical Changes
+**Touch only what you must. Clean up only your own mess.**
+- Don't improve adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken. Match existing style.
+- Remove only imports/variables YOUR changes made unused.
+
+*The test: Every changed line should trace directly to the user's request.*
+
+## 4. Goal-Driven Execution
+**Define success criteria. Loop until verified.**
+- Transform tasks into verifiable goals: "Fix bug" → "Write a test that reproduces it, then make it pass."
+- For multi-step tasks, state a plan with verify steps before starting.
+
+*The test: Can you describe what "done" looks like before you start?*
+
+## 5. Code Deterministic Logic — Don't Let AI Decide
+**Route, retry, and status-code logic belongs in code, not model judgment.**
+- Use AI for: classification, summarization, unstructured text extraction.
+- Don't use AI for: retry decisions, routing by status code, any logic where the answer is already in a value.
+
+*The test: If the logic gives the same answer every time, write it as code.*
+
+## 6. Stay In Scope
+**Don't let tasks expand silently. Stop and confirm before continuing.**
+- If completing a task touches more than 3 unrelated areas, pause and ask.
+- Don't silently expand scope. Name the expansion and get confirmation.
+
+*The test: Can you describe what's left in one sentence? If not, you've drifted.*
+
+## 7. Resolve Pattern Conflicts Explicitly
+**Never mix two competing patterns. Pick one and say why.**
+- Pick the newer or more consistently tested pattern.
+- Flag the other pattern as needing cleanup — don't silently mix them.
+
+*The test: Could a new engineer tell which pattern this codebase uses from your change?*
+
+## 8. Read Before You Write
+**Understand surrounding code before adding to it.**
+- Check what the file already exports and whether a utility already exists.
+- "This looks unrelated" is the most dangerous assumption in a codebase.
+
+*The test: Can you name one existing function your new code interacts with?*
+
+## 9. Write Tests That Can Fail
+**A test that can't fail on wrong behavior is not a test.**
+- Tests must fail if business logic changes. Don't assert hardcoded constants.
+- Encode *why* the behavior matters, not just *what* it does.
+
+*The test: Delete the core logic. Does the test fail? If not, rewrite the test.*
+
+## 10. Checkpoint Multi-Step Tasks
+**Don't continue from a state you can't describe clearly.**
+After each step, output:
+```
+✅ Done / ✅ Verified / ⏳ Remaining
+```
+*The test: Can you explain current state in one paragraph without looking at the code?*
+
+## 11. Match the Codebase's Style
+**Consistency beats personal preference. Always.**
+- Follow existing naming, patterns, and error-handling — even if you'd do it differently.
+- If you believe a convention is harmful, say so. Don't silently introduce a second path.
+
+*The test: Could a developer grep for this pattern and find consistent usage?*
+
+## 12. Make Failures Visible
+**Never package uncertainty as completion.**
+- Don't say "done" if anything was silently skipped, disabled, or unverified.
+- Default to exposing uncertainty, not hiding it.
+
+*The test: Read your summary out loud. Does it tell the whole truth?*
 
 ---
 
-## 進階規則（Agent / 多步驟場景補丁）
-
-### 規則 5：區分 AI 決策 vs 確定性程式碼
-- **適合 AI 處理**：分類、摘要、從非結構化文字提取資訊
-- **不適合 AI 處理**：路由邏輯、重試策略、HTTP 狀態碼判斷、確定性轉換
-- 如果一個狀態碼已經回答了問題，用 if/else 寫死，不要讓 AI 在執行時決定
-
-### 規則 6：範圍控制（對應 Token 預算）
-- 單一任務：專注在一個檔案或一個函式，完成後停下
-- 如果任務快超出原定範圍，先總結目前進度，詢問是否繼續
-- 不要在一次 Chat 對話中同時修改超過 5 個不相關的地方
-- 明確告知何時超出原本任務範圍
-
-### 規則 7：程式碼模式統一
-- 如果程式碼庫中存在兩種互斥的寫法（例如 async/await vs Promise chain），選擇較新或測試較多的那一種
-- 選擇後說明理由，並標記另一種寫法後續需要清理
-- 不要試圖同時滿足兩種寫法，這是最糟糕的結果
-
-### 規則 8：先讀再寫
-- 在一個檔案新增程式碼之前，先確認：
-  - 這個檔案已匯出哪些函式？
-  - 有沒有功能相似的工具函式已存在？
-  - 直接呼叫此檔案的地方是誰？
-- 「這看起來不相關」是最危險的判斷，先確認再動手
-
-### 規則 9：測試必須驗證真邏輯
-- 測試必須能回答：「如果業務邏輯改變，這個測試會失敗嗎？」
-- 不接受只驗證「有回傳某個值」的測試
-- 如果函式回傳的是硬編碼常數也能讓測試通過，這個測試無效
-- 測試應記錄「為什麼這個行為重要」，而不只是「它做了什麼」
-
-### 規則 10：多步驟任務要有檢查點
-- 完成每個步驟後，主動說明：
-  - ✅ 已完成：[具體做了什麼]
-  - ✅ 已驗證：[確認了什麼]
-  - ⏳ 待完成：[還剩什麼]
-- 如果你發現自己跟丟了目前狀態，停下來重新陳述，不要繼續往下做
-
-### 規則 11：風格一致性優先於個人偏好
-- 如果程式碼庫用 snake_case，就用 snake_case（即使你偏好 camelCase）
-- 如果程式碼庫用 class component，就用 class component（即使你偏好 hooks）
-- 如果你認為現有約定有問題，明確提出討論，不要默默開一條分叉路徑
-- 程式碼庫內部，一致性 > 個人最佳實踐
-
-### 規則 12：不確定就說出來，不要靜默失敗
-- 不能說「完成」的情況：
-  - 有任何記錄被跳過但沒有明確告知
-  - 有測試被跳過
-  - 有邊界條件沒有被驗證
-  - 有任何你不確定的假設沒有說明
-- 預設暴露不確定性，不要把「可能出錯」包裝成「已完成」
-
----
-
-## 使用提醒
-
-- 以上規則適用於 Copilot Chat 對話與 inline 建議
-- 專案特定規則（技術棧、測試指令、命名慣例）請追加在此檔案下方
-- 整體指令不要超過 200 行，超過後遵守率明顯下降
-- 定期審查：每條規則都要能回答「它防止了什麼具體錯誤？」
+**These guidelines are working if:** fewer unnecessary diffs, clarifying questions come *before* implementation, and failures surface immediately rather than days later.
