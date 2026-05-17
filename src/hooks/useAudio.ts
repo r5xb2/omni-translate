@@ -3,9 +3,12 @@ import { AudioEngine } from '../services/AudioEngine'
 import { RealtimeWebRTCEngine } from '../services/RealtimeWebRTCEngine'
 import { GroqService, RateLimitError, InvalidKeyError } from '../services/GroqService'
 import { ContextManager } from '../services/ContextManager'
+import { RuntimeMetricsService } from '../services/RuntimeMetricsService'
+import { SpeakerDiarizationService } from '../services/SpeakerDiarizationService'
 import { useAppStore } from '../store/AppStore'
 import { useConfigStore } from '../store/ConfigStore'
 import { ChatMessage, Message } from '../types'
+import { applyTerminologyCorrections } from '../utils/textCorrections'
 import OpenCC from 'opencc-js'
 
 const EN_TRANSLATION_SYSTEM_PROMPT = `You are a precise technical meeting translator.
@@ -105,12 +108,12 @@ function normalizeZhPunctuationMarks(text: string): string {
     .replace(/\s*([，。！？；：])/g, '$1')
 }
 
-function shouldRepairZhPunctuation(text: string): boolean {
+function shouldRepairZhPunctuation(text: string, minZhChars: number): boolean {
   const compact = normalizeText(text)
   if (!compact) return false
   if (ZH_PUNCT_RE.test(compact)) return false
-  if (!ASCII_PUNCT_RE.test(compact) && countZhChars(compact) < 10) return false
-  return countZhChars(compact) >= 6
+  if (!ASCII_PUNCT_RE.test(compact) && countZhChars(compact) < Math.max(10, minZhChars)) return false
+  return countZhChars(compact) >= minZhChars
 }
 
 function isValidChineseOutput(text: string, sourceText: string): boolean {
@@ -143,6 +146,18 @@ function isValidEnglishOutput(text: string, sourceText: string): boolean {
   return true
 }
 
+function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === 'AbortError') return true
+  if (err instanceof Error && err.name === 'AbortError') return true
+  return false
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
 /**
  * useAudio Hook
  * 整合 AudioEngine → GroqService → AppStore 的完整翻譯流程
@@ -156,17 +171,68 @@ export function useAudio() {
   const engineRef = useRef<AudioEngine | null>(null)
   const realtimeEngineRef = useRef<RealtimeWebRTCEngine | null>(null)
   const contextRef = useRef<ContextManager>(new ContextManager(5))
+  const speakerRef = useRef<SpeakerDiarizationService>(new SpeakerDiarizationService())
+  const realtimeSessionIdRef = useRef(0)
+  const realtimeAcceptingRef = useRef(false)
+  const realtimeDrainUntilRef = useRef(0)
+  const realtimeInFlightControllersRef = useRef<Set<AbortController>>(new Set())
+  const realtimeSeenItemIdsRef = useRef<Set<string>>(new Set())
 
   // ─── 音訊作業佇列（防止並行呼叫 GROQ 造成亂序或 Rate Limit）──
   // capturedAt：VAD onSpeechStart 時間（段落開始）
   // capturedEndAt：VAD onSpeechEnd 時間（段落結束）
   // 兩者差値 = 語音段落實際持續時長
-  const blobQueueRef = useRef<{ blob: Blob; capturedAt: number; capturedEndAt: number }[]>([])
+  const blobQueueRef = useRef<{
+    blob: Blob
+    capturedAt: number
+    capturedEndAt: number
+    audioSamples?: Float32Array
+  }[]>([])
   const processingRef = useRef(false)
 
-  const { addMessage, updateMessage, setRecordingState, setAppError, startSession, getExportSession, addPending, removePending } =
+  const { addMessage, removeMessage, updateMessage, setRecordingState, setAppError, startSession, getExportSession, addPending, removePending } =
     useAppStore()
   const { config, getProviderConfig } = useConfigStore()
+
+  const assignSpeakerLabel = useCallback(
+    (capturedAt: number, capturedEndAt: number, audioSamples?: Float32Array): string | undefined => {
+      if (!config.speakerDiarizationEnabled) return undefined
+      if (config.interactionMode === 'lecture') return undefined
+      const result = speakerRef.current.assign({
+        startedAt: capturedAt,
+        endedAt: capturedEndAt,
+        audioSamples,
+      })
+      return result.label
+    },
+    [config.interactionMode, config.speakerDiarizationEnabled],
+  )
+
+  const isRealtimeSessionActive = useCallback((sessionId: number) => {
+    if (sessionId !== realtimeSessionIdRef.current) return false
+    if (realtimeAcceptingRef.current) return true
+    return Date.now() <= realtimeDrainUntilRef.current
+  }, [])
+
+  const cancelRealtimeInFlight = useCallback(() => {
+    realtimeInFlightControllersRef.current.forEach((controller) => controller.abort())
+    realtimeInFlightControllersRef.current.clear()
+  }, [])
+
+  const waitForProcessingDrain = useCallback(async (timeoutMs: number) => {
+    const startedAt = Date.now()
+    while (Date.now() - startedAt < timeoutMs) {
+      const { pendingCount } = useAppStore.getState()
+      const idle =
+        pendingCount === 0
+        && blobQueueRef.current.length === 0
+        && !processingRef.current
+        && realtimeInFlightControllersRef.current.size === 0
+      if (idle) return true
+      await sleep(60)
+    }
+    return false
+  }, [])
 
   const buildTargetMessages = useCallback((
     transcript: string,
@@ -212,15 +278,22 @@ export function useAudio() {
     llmModel: string,
     apiBase: string,
     strict = false,
+    signal?: AbortSignal,
   ): Promise<string> => {
     const raw = await GroqService.translate(
-      buildTargetMessages(transcript, target, config.systemPrompt, strict),
+      buildTargetMessages(
+        transcript,
+        target,
+        `${config.systemPrompt}\n${config.userPrompt}`,
+        strict,
+      ),
       apiKey,
       llmModel,
       apiBase,
+      signal,
     )
     return normalizeText(raw)
-  }, [buildTargetMessages, config.systemPrompt])
+  }, [buildTargetMessages, config.systemPrompt, config.userPrompt])
 
   const buildEmergencyZhMessages = useCallback((transcript: string): ChatMessage[] => {
     return [
@@ -255,21 +328,24 @@ export function useAudio() {
     apiKey: string,
     llmModel: string,
     apiBase: string,
+    signal?: AbortSignal,
   ): Promise<string> => {
     const normalized = normalizeZhPunctuationMarks(normalizeToZhTwLocal(text))
-    if (!shouldRepairZhPunctuation(normalized)) return normalized
+    if (!config.zhPunctuationRepairEnabled) return normalized
+    if (!shouldRepairZhPunctuation(normalized, config.zhPunctuationMinChars)) return normalized
 
     const punctuatedRaw = await GroqService.translate(
       buildZhPunctuationMessages(normalized),
       apiKey,
       llmModel,
       apiBase,
+      signal,
     )
 
     const punctuated = normalizeZhPunctuationMarks(normalizeToZhTwLocal(punctuatedRaw))
     if (countZhChars(punctuated) >= countZhChars(normalized)) return punctuated
     return normalized
-  }, [buildZhPunctuationMessages])
+  }, [buildZhPunctuationMessages, config.zhPunctuationMinChars, config.zhPunctuationRepairEnabled])
 
   const ensureChineseOutput = useCallback(async (
     sourceText: string,
@@ -277,27 +353,30 @@ export function useAudio() {
     apiKey: string,
     llmModel: string,
     apiBase: string,
+    signal?: AbortSignal,
   ): Promise<string> => {
     const attempts: string[] = []
 
-    const first = await punctuateZhText(candidateText, apiKey, llmModel, apiBase)
+    const first = await punctuateZhText(candidateText, apiKey, llmModel, apiBase, signal)
     attempts.push(first)
     if (isValidChineseOutput(first, sourceText)) return first
 
     const retry = await punctuateZhText(
-      await translateToTarget(sourceText, 'zh', apiKey, llmModel, apiBase, false),
+      await translateToTarget(sourceText, 'zh', apiKey, llmModel, apiBase, false, signal),
       apiKey,
       llmModel,
       apiBase,
+      signal,
     )
     attempts.push(retry)
     if (isValidChineseOutput(retry, sourceText)) return retry
 
     const strictRetry = await punctuateZhText(
-      await translateToTarget(sourceText, 'zh', apiKey, llmModel, apiBase, true),
+      await translateToTarget(sourceText, 'zh', apiKey, llmModel, apiBase, true, signal),
       apiKey,
       llmModel,
       apiBase,
+      signal,
     )
     attempts.push(strictRetry)
     if (isValidChineseOutput(strictRetry, sourceText)) return strictRetry
@@ -308,10 +387,12 @@ export function useAudio() {
         apiKey,
         llmModel,
         apiBase,
+        signal,
       ),
       apiKey,
       llmModel,
       apiBase,
+      signal,
     )
     attempts.push(emergency)
     if (isValidChineseOutput(emergency, sourceText)) return emergency
@@ -325,7 +406,7 @@ export function useAudio() {
     }
 
     if (countZhChars(sourceText) > 0) {
-      return punctuateZhText(sourceText, apiKey, llmModel, apiBase)
+      return punctuateZhText(sourceText, apiKey, llmModel, apiBase, signal)
     }
 
     return '（待翻譯）'
@@ -337,14 +418,15 @@ export function useAudio() {
     apiKey: string,
     llmModel: string,
     apiBase: string,
+    signal?: AbortSignal,
   ): Promise<string> => {
     let english = normalizeText(candidateText)
     if (isValidEnglishOutput(english, sourceText)) return english
 
-    english = await translateToTarget(sourceText, 'en', apiKey, llmModel, apiBase, false)
+    english = await translateToTarget(sourceText, 'en', apiKey, llmModel, apiBase, false, signal)
     if (isValidEnglishOutput(english, sourceText)) return english
 
-    english = await translateToTarget(sourceText, 'en', apiKey, llmModel, apiBase, true)
+    english = await translateToTarget(sourceText, 'en', apiKey, llmModel, apiBase, true, signal)
     if (isValidEnglishOutput(english, sourceText)) return english
 
     return countEnChars(sourceText) > 0
@@ -357,12 +439,13 @@ export function useAudio() {
     apiKey: string,
     llmModel: string,
     apiBase: string,
+    signal?: AbortSignal,
   ): Promise<BilingualResult> => {
     const sourceLang = detectSourceLanguage(transcript)
 
     if (sourceLang === 'en') {
-      const chineseRaw = await translateToTarget(transcript, 'zh', apiKey, llmModel, apiBase)
-      const chinese = await ensureChineseOutput(transcript, chineseRaw, apiKey, llmModel, apiBase)
+      const chineseRaw = await translateToTarget(transcript, 'zh', apiKey, llmModel, apiBase, false, signal)
+      const chinese = await ensureChineseOutput(transcript, chineseRaw, apiKey, llmModel, apiBase, signal)
       return {
         english: normalizeText(transcript),
         chinese,
@@ -370,21 +453,21 @@ export function useAudio() {
     }
 
     if (sourceLang === 'zh') {
-      const englishRaw = await translateToTarget(transcript, 'en', apiKey, llmModel, apiBase)
-      const english = await ensureEnglishOutput(transcript, englishRaw, apiKey, llmModel, apiBase)
+      const englishRaw = await translateToTarget(transcript, 'en', apiKey, llmModel, apiBase, false, signal)
+      const english = await ensureEnglishOutput(transcript, englishRaw, apiKey, llmModel, apiBase, signal)
       return {
         english,
-        chinese: await punctuateZhText(transcript, apiKey, llmModel, apiBase),
+        chinese: await punctuateZhText(transcript, apiKey, llmModel, apiBase, signal),
       }
     }
 
     const [englishRaw, chineseRaw] = await Promise.all([
-      translateToTarget(transcript, 'en', apiKey, llmModel, apiBase),
-      translateToTarget(transcript, 'zh', apiKey, llmModel, apiBase),
+      translateToTarget(transcript, 'en', apiKey, llmModel, apiBase, false, signal),
+      translateToTarget(transcript, 'zh', apiKey, llmModel, apiBase, false, signal),
     ])
     const [english, chinese] = await Promise.all([
-      ensureEnglishOutput(transcript, englishRaw, apiKey, llmModel, apiBase),
-      ensureChineseOutput(transcript, chineseRaw, apiKey, llmModel, apiBase),
+      ensureEnglishOutput(transcript, englishRaw, apiKey, llmModel, apiBase, signal),
+      ensureChineseOutput(transcript, chineseRaw, apiKey, llmModel, apiBase, signal),
     ])
 
     return {
@@ -398,12 +481,29 @@ export function useAudio() {
     translateToTarget,
   ])
 
+  const polishOriginalTranscript = useCallback(async (
+    transcript: string,
+    apiKey: string,
+    llmModel: string,
+    apiBase: string,
+    signal?: AbortSignal,
+  ): Promise<string> => {
+    const normalized = applyTerminologyCorrections(transcript)
+    if (!config.zhPunctuationRepairEnabled) return normalized
+    try {
+      return await punctuateZhText(normalized, apiKey, llmModel, apiBase, signal)
+    } catch (err) {
+      if (isAbortError(err)) throw err
+      return normalized
+    }
+  }, [config.zhPunctuationRepairEnabled, punctuateZhText])
+
   // ─── 處理單一 Blob（實際 STT + LLM 邏輯）─────────────────────
   const processSingleBlob = useCallback(
-    async (blob: Blob, capturedAt: number, capturedEndAt: number) => {
+    async (blob: Blob, capturedAt: number, capturedEndAt: number, audioSamples?: Float32Array) => {
       const { apiKey, apiBase } = getProviderConfig()
       const { sttModel, llmModel } = config.modelSettings
-      const { sttPrompt } = config
+      const { sttPrompt, sttLanguageHint } = config
 
       // 使用 capturedAt/capturedEndAt 反映實際語音發生的時間範圍
       const msgId = addMessage({
@@ -419,6 +519,7 @@ export function useAudio() {
           sttModel,
           apiBase,
           sttPrompt,
+          sttLanguageHint,
         )
         if (!transcript) {
           // Whisper 回傳空字串：真靜音或語音過短無法辨識，記錄但不算遺失
@@ -426,9 +527,24 @@ export function useAudio() {
           return
         }
 
-        // 翻譯開關：關閉時僅顯示原文，跳過 LLM 呢叫
+        RuntimeMetricsService.recordTranscriptLatency(Date.now() - capturedEndAt)
+        const normalizedTranscript = applyTerminologyCorrections(transcript)
+        const speakerLabel = assignSpeakerLabel(capturedAt, capturedEndAt, audioSamples)
+
+        // 翻譯開關：關閉時顯示原文；若啟用標點修復仍會呼叫 LLM 做標點優化
         if (!config.enableTranslation) {
-          updateMessage(msgId, { originalText: transcript, translatedText: '', status: 'completed' })
+          const polishedOriginal = await polishOriginalTranscript(
+            normalizedTranscript,
+            apiKey,
+            llmModel,
+            apiBase,
+          )
+          updateMessage(msgId, {
+            originalText: polishedOriginal,
+            translatedText: '',
+            status: 'completed',
+            speakerLabel,
+          })
           contextRef.current.add(
             useAppStore.getState().messages.find((m) => m.id === msgId) as Message
           )
@@ -436,14 +552,15 @@ export function useAudio() {
           return
         }
 
-        updateMessage(msgId, { originalText: transcript, status: 'translating' })
+        updateMessage(msgId, { originalText: normalizedTranscript, status: 'translating', speakerLabel })
 
-        const bilingual = await translateBilingual(transcript, apiKey, llmModel, apiBase)
+        const bilingual = await translateBilingual(normalizedTranscript, apiKey, llmModel, apiBase)
 
         const completedMsg: Partial<Message> = {
-          originalText: bilingual.english,
-          translatedText: bilingual.chinese,
+          originalText: applyTerminologyCorrections(bilingual.english),
+          translatedText: applyTerminologyCorrections(bilingual.chinese),
           status: 'completed',
+          speakerLabel,
         }
         updateMessage(msgId, completedMsg)
 
@@ -453,48 +570,95 @@ export function useAudio() {
         }
 
         setAppError(null)
+        RuntimeMetricsService.recordTranslationSuccess()
       } catch (err) {
         if (err instanceof RateLimitError) {
           setAppError('rate_limit')
           updateMessage(msgId, { status: 'error', translatedText: '（Rate Limit，已自動重試）' })
+          RuntimeMetricsService.recordTranslationError()
         } else if (err instanceof InvalidKeyError) {
           setAppError('invalid_key')
           updateMessage(msgId, { status: 'error', translatedText: '（API Key 無效）' })
           engineRef.current?.destroy()
           engineRef.current = null
           setRecordingState('stopping')
+          RuntimeMetricsService.recordTranslationError()
         } else if (err instanceof TypeError && err.message.includes('fetch')) {
           setAppError('network_offline')
           updateMessage(msgId, { status: 'error', translatedText: '（網路中斷）' })
+          RuntimeMetricsService.recordTranslationError()
         } else {
           setAppError('groq_server_error')
           updateMessage(msgId, { status: 'error', translatedText: '（服務異常）' })
+          RuntimeMetricsService.recordTranslationError()
         }
       } finally {
         // 無論成功或失敗，必須移除一個 pending（確保計數器歸零）
         removePending()
       }
     },
-    [addMessage, config, getProviderConfig, removePending, setAppError, setRecordingState, translateBilingual, updateMessage],
+    [addMessage, assignSpeakerLabel, config, getProviderConfig, polishOriginalTranscript, removeMessage, removePending, setAppError, setRecordingState, translateBilingual, updateMessage],
   )
 
   // ─── Realtime 模式：直接從轉寫文字進入翻譯管道（跳過 STT）────
   const processRealtimeTranscript = useCallback(
-    async (text: string, capturedAt: number, capturedEndAt: number) => {
+    async (
+      sessionId: number,
+      text: string,
+      capturedAt: number,
+      capturedEndAt: number,
+      itemId?: string,
+    ) => {
+      if (!isRealtimeSessionActive(sessionId)) return
+      if (itemId && realtimeSeenItemIdsRef.current.has(itemId)) return
+      if (itemId) realtimeSeenItemIdsRef.current.add(itemId)
+
+      const normalizedText = applyTerminologyCorrections(text)
+      const speakerLabel = assignSpeakerLabel(capturedAt, capturedEndAt)
+      RuntimeMetricsService.recordTranscriptLatency(Date.now() - capturedEndAt)
+
       addPending()
+      const controller = new AbortController()
+      realtimeInFlightControllersRef.current.add(controller)
+
       // Realtime 模式的翻譯仍使用 GROQ provider（依設定）
       const { apiKey, apiBase } = getProviderConfig()
       const { llmModel } = config.modelSettings
 
-      const msgId = addMessage(
-        { originalText: text, translatedText: '', status: 'translating' },
+      let msgId: string | null = null
+
+      if (!isRealtimeSessionActive(sessionId)) {
+        controller.abort()
+        realtimeInFlightControllersRef.current.delete(controller)
+        removePending()
+        return
+      }
+
+      msgId = addMessage(
+        { originalText: normalizedText, translatedText: '', status: 'translating', speakerLabel },
         capturedAt,
         capturedEndAt,
       )
 
       try {
+        if (!isRealtimeSessionActive(sessionId)) {
+          removeMessage(msgId)
+          return
+        }
+
         if (!config.enableTranslation) {
-          updateMessage(msgId, { status: 'completed' })
+          const polishedOriginal = await polishOriginalTranscript(
+            normalizedText,
+            apiKey,
+            llmModel,
+            apiBase,
+            controller.signal,
+          )
+          if (!isRealtimeSessionActive(sessionId)) {
+            removeMessage(msgId)
+            return
+          }
+          updateMessage(msgId, { originalText: polishedOriginal, status: 'completed', speakerLabel })
           contextRef.current.add(
             useAppStore.getState().messages.find((m) => m.id === msgId) as Message,
           )
@@ -502,12 +666,18 @@ export function useAudio() {
           return
         }
 
-        const bilingual = await translateBilingual(text, apiKey, llmModel, apiBase)
+        const bilingual = await translateBilingual(normalizedText, apiKey, llmModel, apiBase, controller.signal)
+
+        if (!isRealtimeSessionActive(sessionId)) {
+          removeMessage(msgId)
+          return
+        }
 
         const completedMsg: Partial<Message> = {
-          originalText: bilingual.english,
-          translatedText: bilingual.chinese,
+          originalText: applyTerminologyCorrections(bilingual.english),
+          translatedText: applyTerminologyCorrections(bilingual.chinese),
           status: 'completed',
+          speakerLabel,
         }
         updateMessage(msgId, completedMsg)
 
@@ -516,36 +686,65 @@ export function useAudio() {
           contextRef.current.add({ ...currentMsg, ...completedMsg } as Message)
         }
         setAppError(null)
+        RuntimeMetricsService.recordTranslationSuccess()
       } catch (err) {
+        if (isAbortError(err) || !isRealtimeSessionActive(sessionId)) {
+          if (msgId) removeMessage(msgId)
+          return
+        }
         if (err instanceof RateLimitError) {
           setAppError('rate_limit')
-          updateMessage(msgId, { status: 'error', translatedText: '（Rate Limit，已自動重試）' })
+          if (msgId) updateMessage(msgId, { status: 'error', translatedText: '（Rate Limit，已自動重試）' })
+          RuntimeMetricsService.recordTranslationError()
         } else if (err instanceof InvalidKeyError) {
           setAppError('invalid_key')
-          updateMessage(msgId, { status: 'error', translatedText: '（API Key 無效）' })
+          if (msgId) updateMessage(msgId, { status: 'error', translatedText: '（API Key 無效）' })
           realtimeEngineRef.current?.destroy()
           realtimeEngineRef.current = null
+          realtimeAcceptingRef.current = false
           setRecordingState('stopping')
+          RuntimeMetricsService.recordTranslationError()
         } else if (err instanceof TypeError && err.message.includes('fetch')) {
           setAppError('network_offline')
-          updateMessage(msgId, { status: 'error', translatedText: '（網路中斷）' })
+          if (msgId) updateMessage(msgId, { status: 'error', translatedText: '（網路中斷）' })
+          RuntimeMetricsService.recordTranslationError()
         } else {
           setAppError('groq_server_error')
-          updateMessage(msgId, { status: 'error', translatedText: '（服務異常）' })
+          if (msgId) updateMessage(msgId, { status: 'error', translatedText: '（服務異常）' })
+          RuntimeMetricsService.recordTranslationError()
         }
       } finally {
+        realtimeInFlightControllersRef.current.delete(controller)
         removePending()
       }
     },
-    [addMessage, config, getProviderConfig, removePending, setAppError, setRecordingState, translateBilingual, updateMessage],
+    [
+      addMessage,
+      assignSpeakerLabel,
+      config,
+      getProviderConfig,
+      isRealtimeSessionActive,
+      removeMessage,
+      removePending,
+      setAppError,
+      setRecordingState,
+      polishOriginalTranscript,
+      translateBilingual,
+      updateMessage,
+    ],
   )
 
   // ─── 佇列入口：立即返回，讓 AudioEngine 繼續監聽麥克風 ────────
   const handleSpeechEnd = useCallback(
-    (blob: Blob, speechStartedAt: number, speechEndedAt: number) => {
+    (blob: Blob, speechStartedAt: number, speechEndedAt: number, audioSamples?: Float32Array) => {
       // speechStartedAt / speechEndedAt 來自 AudioEngine，分別對應 onSpeechStart / onSpeechEnd 時刻
       // silenceGap = 下段 speechStartedAt - 上段 speechEndedAt（純靜音時長，不含語音本身）
-      blobQueueRef.current.push({ blob, capturedAt: speechStartedAt, capturedEndAt: speechEndedAt })
+      blobQueueRef.current.push({
+        blob,
+        capturedAt: speechStartedAt,
+        capturedEndAt: speechEndedAt,
+        audioSamples,
+      })
       // addPending 必須在 push 之後立即執行，確保計數器不少算
       addPending()
       if (processingRef.current) return // 已有消耗者，直接返回
@@ -553,8 +752,8 @@ export function useAudio() {
       processingRef.current = true
       void (async () => {
         while (blobQueueRef.current.length > 0) {
-          const { blob: next, capturedAt, capturedEndAt: endAt } = blobQueueRef.current.shift()!
-          await processSingleBlob(next, capturedAt, endAt)
+          const { blob: next, capturedAt, capturedEndAt: endAt, audioSamples } = blobQueueRef.current.shift()!
+          await processSingleBlob(next, capturedAt, endAt, audioSamples)
         }
         processingRef.current = false
       })()
@@ -562,23 +761,47 @@ export function useAudio() {
     [processSingleBlob],
   )
 
+  const getModeAdjustedVad = useCallback(() => {
+    if (config.interactionMode === 'lecture') {
+      return {
+        silenceMs: Math.max(config.vadSilenceMs, 900),
+        maxDurationMs: Math.max(config.vadMaxDurationMs, 30000),
+      }
+    }
+    return {
+      silenceMs: config.vadSilenceMs,
+      maxDurationMs: config.vadMaxDurationMs,
+    }
+  }, [config.interactionMode, config.vadMaxDurationMs, config.vadSilenceMs])
+
   const startStandardEngine = useCallback(async () => {
+    const modeVad = getModeAdjustedVad()
     const engine = new AudioEngine()
     await engine.init({
       onSpeechEnd: handleSpeechEnd,
-      silenceMs: config.vadSilenceMs,
-      maxDurationMs: config.vadMaxDurationMs,
+      silenceMs: modeVad.silenceMs,
+      maxDurationMs: modeVad.maxDurationMs,
     })
     engine.start()
     engineRef.current = engine
-  }, [config.vadMaxDurationMs, config.vadSilenceMs, handleSpeechEnd])
+  }, [getModeAdjustedVad, handleSpeechEnd])
 
   // ─── 控制介面 ──────────────────────────────────────────────
   const start = useCallback(async () => {
     try {
-      blobQueueRef.current = [] as { blob: Blob; capturedAt: number; capturedEndAt: number }[]
+      blobQueueRef.current = [] as {
+        blob: Blob
+        capturedAt: number
+        capturedEndAt: number
+        audioSamples?: Float32Array
+      }[]
       processingRef.current = false
       contextRef.current.clear()
+      speakerRef.current.reset()
+      realtimeSeenItemIdsRef.current.clear()
+      realtimeAcceptingRef.current = false
+      realtimeDrainUntilRef.current = 0
+      cancelRealtimeInFlight()
       startSession()
       setAppError(null)
 
@@ -590,20 +813,30 @@ export function useAudio() {
           setAppError('realtime_error', '未設定 OpenAI API Key，已自動切回標準模式')
         } else {
           try {
+            const sessionId = realtimeSessionIdRef.current + 1
+            realtimeSessionIdRef.current = sessionId
+            realtimeAcceptingRef.current = true
+            realtimeDrainUntilRef.current = 0
+
             const engine = new RealtimeWebRTCEngine()
             await engine.init({
               apiKey: openaiKey,
               model: config.realtimeModel,
-              silenceDurationMs: config.vadSilenceMs,
-              onTranscript: (text, startedAt, endedAt) => {
-                void processRealtimeTranscript(text, startedAt, endedAt)
+              silenceDurationMs: getModeAdjustedVad().silenceMs,
+              language: config.sttLanguageHint === 'auto' ? undefined : config.sttLanguageHint,
+              onTranscript: (text, startedAt, endedAt, itemId) => {
+                void processRealtimeTranscript(sessionId, text, startedAt, endedAt, itemId)
               },
               onError: (err) => {
                 setAppError('realtime_error', err.message)
                 console.error('[RealtimeWebRTCEngine]', err)
               },
               onStateChange: (state) => {
-                if (state === 'closed') setRecordingState('stopping')
+                if (state === 'closed') {
+                  realtimeAcceptingRef.current = false
+                  realtimeDrainUntilRef.current = 0
+                  setRecordingState('stopping')
+                }
               },
             })
             engine.start()
@@ -611,6 +844,8 @@ export function useAudio() {
           } catch (err) {
             const detail = err instanceof Error ? err.message : String(err)
             console.error('[RealtimeWebRTCEngine] fallback to standard mode:', detail)
+            realtimeAcceptingRef.current = false
+            realtimeDrainUntilRef.current = 0
             await startStandardEngine()
             setAppError('realtime_error', `${detail}；已自動切回標準模式`)
           }
@@ -633,27 +868,54 @@ export function useAudio() {
         setAppError('groq_server_error')
       }
     }
-  }, [config, processRealtimeTranscript, setAppError, setRecordingState, startSession, startStandardEngine])
+  }, [cancelRealtimeInFlight, config, getModeAdjustedVad, processRealtimeTranscript, setAppError, setRecordingState, startSession, startStandardEngine])
 
   const pause = useCallback(() => {
     engineRef.current?.pause()
-    realtimeEngineRef.current?.pause()
+    if (realtimeEngineRef.current) {
+      realtimeAcceptingRef.current = false
+      realtimeDrainUntilRef.current = Date.now() + 1500
+      realtimeEngineRef.current.pause()
+    }
     setRecordingState('paused')
   }, [setRecordingState])
 
   const resume = useCallback(() => {
     engineRef.current?.resume()
     realtimeEngineRef.current?.resume()
+    if (realtimeEngineRef.current) {
+      realtimeAcceptingRef.current = true
+      realtimeDrainUntilRef.current = 0
+    }
     setRecordingState('recording')
   }, [setRecordingState])
 
-  const stop = useCallback(() => {
-    engineRef.current?.destroy()
+  const stop = useCallback(async () => {
+    const standardEngine = engineRef.current
+    const realtimeEngine = realtimeEngineRef.current
+
+    if (standardEngine) {
+      standardEngine.pause()
+    }
+    if (realtimeEngine) {
+      realtimeAcceptingRef.current = false
+      realtimeDrainUntilRef.current = Date.now() + 1500
+      realtimeEngine.pause()
+    }
+
+    await waitForProcessingDrain(10_000)
+
+    realtimeDrainUntilRef.current = 0
+    realtimeAcceptingRef.current = false
+    realtimeSessionIdRef.current += 1
+    realtimeSeenItemIdsRef.current.clear()
+    cancelRealtimeInFlight()
+    standardEngine?.destroy()
+    realtimeEngine?.destroy()
     engineRef.current = null
-    realtimeEngineRef.current?.destroy()
     realtimeEngineRef.current = null
     setRecordingState('stopping')
-  }, [setRecordingState])
+  }, [cancelRealtimeInFlight, setRecordingState, waitForProcessingDrain])
 
   return { start, pause, resume, stop, getExportSession }
 }

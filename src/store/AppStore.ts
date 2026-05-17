@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { Message, RecordingState, AppErrorType, ExportSession } from '../types'
 import { generateId } from '../utils/formatters'
+import { RuntimeMetricsService } from '../services/RuntimeMetricsService'
 
 interface AppStoreState {
   messages: Message[]
@@ -13,6 +14,7 @@ interface AppStoreState {
 
   // ─── Actions ─────────────────────────────────────────────────
   addMessage: (msg: Omit<Message, 'id' | 'timestamp' | 'capturedEndAt'>, capturedAt?: number, capturedEndAt?: number) => string
+  removeMessage: (id: string) => void
   updateMessage: (id: string, patch: Partial<Message>) => void
   setRecordingState: (state: RecordingState) => void
   setAppError: (err: AppErrorType, detail?: string) => void
@@ -42,13 +44,24 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       capturedEndAt: capturedEndAt ?? now,
       ...msg,
     }
-    set((s) => ({ messages: [...s.messages, message] }))
+    set((s) => {
+      if (s.recordingState === 'stopping') {
+        RuntimeMetricsService.recordMessageWhileStopping()
+      }
+      return { messages: [...s.messages, message] }
+    })
     return id
   },
 
   updateMessage: (id, patch) => {
     set((s) => ({
       messages: s.messages.map((m) => (m.id === id ? { ...m, ...patch } : m)),
+    }))
+  },
+
+  removeMessage: (id) => {
+    set((s) => ({
+      messages: s.messages.filter((m) => m.id !== id),
     }))
   },
 
@@ -60,8 +73,16 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   startSession: () => set({ sessionStartTime: Date.now(), messages: [], pendingCount: 0, appError: null, errorDetail: null }),
 
-  addPending: () => set((s) => ({ pendingCount: s.pendingCount + 1 })),
-  removePending: () => set((s) => ({ pendingCount: Math.max(0, s.pendingCount - 1) })),
+  addPending: () => set((s) => {
+    const next = s.pendingCount + 1
+    RuntimeMetricsService.setPendingDepth(next)
+    return { pendingCount: next }
+  }),
+  removePending: () => set((s) => {
+    const next = Math.max(0, s.pendingCount - 1)
+    RuntimeMetricsService.setPendingDepth(next)
+    return { pendingCount: next }
+  }),
 
   getExportSession: () => {
     const { messages, sessionStartTime } = get()
@@ -71,10 +92,11 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       endTime: Date.now(),
       messages: messages
         .filter((m) => m.status === 'completed')
-        .map(({ timestamp, originalText, translatedText }) => ({
+        .map(({ timestamp, originalText, translatedText, speakerLabel }) => ({
           timestamp,
           originalText,
           translatedText,
+          speakerLabel,
         })),
     }
   },

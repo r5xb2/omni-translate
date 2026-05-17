@@ -3,6 +3,9 @@ export type ApiProvider = 'groq' | 'openai'
 
 // ─── STT 模式 ─────────────────────────────────────────────────
 export type SttMode = 'standard' | 'openai-realtime'
+export type InteractionMode = 'conversation' | 'lecture'
+export type DisplayMode = 'original' | 'translated' | 'bilingual'
+export type RecordTemplate = string
 
 // ─── 翻譯訊息實體 ─────────────────────────────────────────────
 export interface Message {
@@ -11,6 +14,8 @@ export interface Message {
   timestamp: number
   /** VAD 捕捉到語音結束的時間（段落結束），用於計算鈕默間隔 */
   capturedEndAt: number
+  /** 輕量說話者標記（Speaker A/B/C） */
+  speakerLabel?: string
   originalText: string
   translatedText: string
   status: 'transcribing' | 'translating' | 'completed' | 'error'
@@ -27,6 +32,8 @@ export interface AppConfig {
   vadSilenceMs: number       // 靜音觸發毫秒（預設 500）
   vadMaxDurationMs: number   // 強制切分毫秒（預設 20000）
   systemPrompt: string
+  /** Prompt 模組（user 層） */
+  userPrompt: string
   rollingContextSize: number // N=5
   modelSettings: {
     sttModel: string
@@ -35,6 +42,12 @@ export interface AppConfig {
   enableTranslation: boolean
   /** STT 專有名詞/提示詞（可輸入產品名、人名、縮寫） */
   sttPrompt: string
+  /** STT 語言提示：auto/en/zh 等 */
+  sttLanguageHint: string
+  /** 啟用中文標點修復策略 */
+  zhPunctuationRepairEnabled: boolean
+  /** 觸發中文標點修復的最小中文字數 */
+  zhPunctuationMinChars: number
   /** 會議可讀模式：對輸出做合併與過濾（不影響原始辨識） */
   meetingReadableMode: boolean
   /** 會議可讀模式：短句合併間隔（ms） */
@@ -45,6 +58,16 @@ export interface AppConfig {
   sttMode: SttMode
   /** Realtime 模式使用的辨識模型 */
   realtimeModel: string
+  /** 啟用輕量講者辨識（Speaker A/B/C） */
+  speakerDiarizationEnabled: boolean
+  /** 使用情境：會議/對談 或 單向內容（課堂/演講） */
+  interactionMode: InteractionMode
+  /** 顯示模式：原文 / 翻譯 / 雙語 */
+  displayMode: DisplayMode
+  /** 完整紀錄包預設模板 */
+  defaultRecordTemplate: RecordTemplate
+  /** 目前套用的 profile id（builtin/imported） */
+  activeProfileId?: string
 }
 
 // ─── 導出用的會議 Session ──────────────────────────────────────
@@ -52,7 +75,7 @@ export interface ExportSession {
   sessionId: string
   startTime: number
   endTime: number
-  messages: Pick<Message, 'timestamp' | 'originalText' | 'translatedText'>[]
+  messages: Pick<Message, 'timestamp' | 'originalText' | 'translatedText' | 'speakerLabel'>[]
 }
 
 // ─── 錄音狀態機 ───────────────────────────────────────────────

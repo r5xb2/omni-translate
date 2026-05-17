@@ -1,0 +1,31 @@
+id: defaults
+name: 內建預設
+provider: groq
+sttMode: standard
+modelSettings:
+  sttModel: whisper-large-v3-turbo
+  llmModel: llama-3.3-70b-versatile
+realtimeModel: gpt-realtime-whisper
+vad:
+  silenceMs: 500
+  maxDurationMs: 20000
+translation:
+  enabled: true
+sttPrompt: ""
+sttLanguageHint: auto
+speaker:
+  enabled: false
+zhPunctuation:
+  enabled: true
+  minChars: 6
+meetingReadable:
+  enabled: false
+  mergeGapMs: 1200
+  minChars: 1
+prompts:
+  systemFile: prompts/system/default.md
+  userFile: prompts/user/default.md
+interaction:
+  mode: conversation
+  displayMode: bilingual
+  defaultRecordTemplate: standard

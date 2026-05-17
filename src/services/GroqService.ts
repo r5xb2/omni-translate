@@ -65,6 +65,7 @@ export const GroqService = {
     sttModel: string,
     apiBase = GROQ_API_BASE,
     sttPrompt = '',
+    language = '',
   ): Promise<string> {
     return withRetry(async () => {
       const formData = new FormData()
@@ -72,6 +73,9 @@ export const GroqService = {
       formData.append('model', sttModel)
       if (sttPrompt.trim()) {
         formData.append('prompt', sttPrompt.trim())
+      }
+      if (language.trim() && language !== 'auto') {
+        formData.append('language', language.trim())
       }
       formData.append('response_format', 'json')
 
@@ -100,6 +104,7 @@ export const GroqService = {
     apiKey: string,
     llmModel: string,
     apiBase = GROQ_API_BASE,
+    signal?: AbortSignal,
   ): Promise<string> {
     return withRetry(async () => {
       const res = await fetch(`${apiBase}/chat/completions`, {
@@ -108,6 +113,7 @@ export const GroqService = {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
+        signal,
         body: JSON.stringify({
           model: llmModel,
           messages,

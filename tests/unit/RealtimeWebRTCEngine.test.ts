@@ -108,15 +108,42 @@ describe('RealtimeWebRTCEngine', () => {
       onStateChange: vi.fn(),
     })
 
-    pc.dataChannel.simulateMessage({ type: 'input_audio_buffer.speech_started' })
-    pc.dataChannel.simulateMessage({ type: 'input_audio_buffer.speech_stopped' })
+    engine.start()
+
+    pc.dataChannel.simulateMessage({ type: 'input_audio_buffer.speech_started', item_id: 'item_123' })
+    pc.dataChannel.simulateMessage({ type: 'input_audio_buffer.speech_stopped', item_id: 'item_123' })
     pc.dataChannel.simulateMessage({
       type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'item_123',
       transcript: '  hello nvme  ',
     })
 
     expect(onTranscript).toHaveBeenCalledOnce()
     expect(onTranscript.mock.calls[0][0]).toBe('hello nvme')
+    expect(onTranscript.mock.calls[0][3]).toBe('item_123')
+  })
+
+  it('pause 後會忽略晚到的 transcription.completed 事件', async () => {
+    const onTranscript = vi.fn()
+
+    await engine.init({
+      apiKey: 'sk-test',
+      model: 'gpt-4o-transcribe',
+      onTranscript,
+      onError: vi.fn(),
+      onStateChange: vi.fn(),
+    })
+
+    engine.start()
+    engine.pause()
+
+    pc.dataChannel.simulateMessage({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'item_pause_late',
+      transcript: 'late transcript',
+    })
+
+    expect(onTranscript).not.toHaveBeenCalled()
   })
 
   it('pause 會在串流中送出 input_audio_buffer.commit', async () => {
@@ -139,6 +166,25 @@ describe('RealtimeWebRTCEngine', () => {
     expect(track.enabled).toBe(false)
   })
 
+  it('server_vad 模型 pause 不會送出 input_audio_buffer.commit', async () => {
+    await engine.init({
+      apiKey: 'sk-test',
+      model: 'gpt-4o-transcribe',
+      onTranscript: vi.fn(),
+      onError: vi.fn(),
+      onStateChange: vi.fn(),
+    })
+
+    engine.start()
+    engine.pause()
+
+    const commitSent = pc.dataChannel.sent
+      .map((s) => JSON.parse(s) as Record<string, unknown>)
+      .some((m) => m.type === 'input_audio_buffer.commit')
+
+    expect(commitSent).toBe(false)
+  })
+
   it('empty buffer 錯誤會被忽略，不觸發 onError', async () => {
     const onError = vi.fn()
 
@@ -153,6 +199,28 @@ describe('RealtimeWebRTCEngine', () => {
     pc.dataChannel.simulateMessage({
       type: 'error',
       error: { message: 'input audio buffer is empty' },
+    })
+
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('buffer too small 錯誤會被忽略，不觸發 onError', async () => {
+    const onError = vi.fn()
+
+    await engine.init({
+      apiKey: 'sk-test',
+      model: 'gpt-4o-transcribe',
+      onTranscript: vi.fn(),
+      onError,
+      onStateChange: vi.fn(),
+    })
+
+    pc.dataChannel.simulateMessage({
+      type: 'error',
+      error: {
+        message: 'Error committing input audio buffer: buffer too small',
+        code: 'input_audio_buffer_commit_empty',
+      },
     })
 
     expect(onError).not.toHaveBeenCalled()

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAudio } from './hooks/useAudio'
 import { useAppStore } from './store/AppStore'
 import { useConfigStore } from './store/ConfigStore'
@@ -14,7 +14,11 @@ export function App() {
   const [exportSession, setExportSession] = useState<ExportSession | null>(null)
   const { start, pause, resume, stop, getExportSession } = useAudio()
   const { setRecordingState, clearMessages, pendingCount } = useAppStore()
-  const { getProviderConfig, config } = useConfigStore()
+  const { getProviderConfig, config, hydrateFromLocalConfig } = useConfigStore()
+
+  useEffect(() => {
+    void hydrateFromLocalConfig()
+  }, [hydrateFromLocalConfig])
 
   const handleStart = () => {
     const { apiKey } = getProviderConfig()
@@ -26,9 +30,11 @@ export function App() {
   }
 
   const handleStop = () => {
-    stop()
-    const session = getExportSession()
-    setExportSession(session)
+    void (async () => {
+      await stop()
+      const session = getExportSession()
+      setExportSession(session)
+    })()
   }
 
   const handleExportConfirm = () => {
@@ -42,26 +48,28 @@ export function App() {
       {/* 頂部標題列 */}
       <header className="flex items-center gap-3 bg-white border-b px-4 py-3 shadow-sm">
         <span className="text-lg font-bold text-blue-600">OmniTranslate</span>
-        <span className="text-xs rounded px-2 py-0.5 text-gray-400 bg-gray-100">
-          {config.provider === 'openai' ? 'OpenAI' : 'GROQ LPU'}
+        <span className="text-xs text-gray-500">
+          即時語音轉文字與翻譯，支援逐字稿與模板化紀錄輸出
         </span>
-        {!config.enableTranslation && (
-          <span className="text-xs rounded px-2 py-0.5 text-orange-600 bg-orange-50 border border-orange-200">
-            僅轉文字
-          </span>
-        )}
+        <span className="text-xs rounded px-2 py-0.5 text-gray-500 bg-gray-100">
+          {config.interactionMode === 'conversation' ? '會議 / 對談記錄' : '單向內容記錄'}
+        </span>
+        <span className="text-xs rounded px-2 py-0.5 text-blue-700 bg-blue-50 border border-blue-200">
+          {config.displayMode === 'original' ? '原文' : config.displayMode === 'translated' ? '翻譯' : '雙語'}
+        </span>
         {pendingCount > 0 && (
           <span className="text-xs rounded px-2 py-0.5 text-blue-600 bg-blue-50 border border-blue-200 animate-pulse">
             處理中 {pendingCount}
           </span>
         )}
-        <span className="ml-auto text-xs text-gray-400">
-          {config.modelSettings.sttModel}{config.enableTranslation ? ` ／ ${config.modelSettings.llmModel}` : ''}
-        </span>
       </header>
 
       {/* 主內容區 */}
       <main className="flex flex-1 flex-col gap-2 overflow-hidden p-4">
+        <h1 className="sr-only">OmniTranslate 即時語音轉文字工具</h1>
+        <p className="sr-only">
+          本頁提供會議與課堂場景的語音轉文字，支援原文、翻譯、雙語顯示，以及逐字稿與紀錄匯出。
+        </p>
         <ErrorBanner />
         <TranslationTable />
       </main>

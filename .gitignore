@@ -23,3 +23,11 @@ npm-debug.log*
 
 # TypeScript 快取
 *.tsbuildinfo
+
+# 臨時驗證/除錯輸出（統一收納 temp/）
+temp/*
+!temp/.gitkeep
+!temp/README.md
+
+# 本機設定檔（含 API Key，不進版控）
+config/local/app.local.yaml

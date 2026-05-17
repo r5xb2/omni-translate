@@ -39,11 +39,18 @@ export const DEFAULT_ROLLING_CONTEXT_SIZE = 5
 // ─── 功能開關預設值 ────────────────────────────────────────────
 export const DEFAULT_ENABLE_TRANSLATION = true
 export const DEFAULT_STT_PROMPT = ''
+export const DEFAULT_STT_LANGUAGE_HINT = 'auto'
 export const DEFAULT_MEETING_READABLE_MODE = false
 export const DEFAULT_READABILITY_MERGE_GAP_MS = 1200
 export const DEFAULT_READABILITY_MIN_CHARS = 1
 export const DEFAULT_STT_MODE = 'standard' as const
 export const DEFAULT_REALTIME_MODEL = 'gpt-realtime-whisper'
+export const DEFAULT_SPEAKER_DIARIZATION_ENABLED = false
+export const DEFAULT_ZH_PUNCTUATION_REPAIR_ENABLED = true
+export const DEFAULT_ZH_PUNCTUATION_MIN_CHARS = 6
+export const DEFAULT_INTERACTION_MODE = 'conversation' as const
+export const DEFAULT_DISPLAY_MODE = 'bilingual' as const
+export const DEFAULT_RECORD_TEMPLATE = 'standard' as const
 
 // ─── OpenAI Realtime 模型清單 ──────────────────────────────────
 export const OPENAI_REALTIME_MODELS = [
@@ -71,6 +78,10 @@ Rules:
    Example: 介面控制器（Interface Controller）
 4. Output ONLY the translated sentence. No explanation, no prefix, no quotes.`
 
+export const ICT_USER_PROMPT = `Terminology preference:
+- Keep product names and standards in original form when uncertain.
+- Prefer concise meeting-style sentences.`
+
 // ─── Prompt 模板選項 ───────────────────────────────────────────
 export const PROMPT_TEMPLATES = [
   { label: 'ICT 技術會議（預設）', value: ICT_SYSTEM_PROMPT },
@@ -83,3 +94,21 @@ export const PROMPT_TEMPLATES = [
     value: `You are a professional business interpreter. Translate English to Traditional Chinese (Taiwan standard). Output ONLY the translation.`,
   },
 ]
+
+export const INTERACTION_MODE_OPTIONS = [
+  { value: 'conversation', label: '會議 / 對談記錄' },
+  { value: 'lecture', label: '單向內容記錄（課堂/演講）' },
+] as const
+
+export const DISPLAY_MODE_OPTIONS = [
+  { value: 'original', label: '原文' },
+  { value: 'translated', label: '翻譯' },
+  { value: 'bilingual', label: '雙語' },
+] as const
+
+export const RECORD_TEMPLATE_OPTIONS = [
+  { value: 'standard', label: '標準紀錄' },
+  { value: 'action_items', label: '決策 / 待辦版' },
+  { value: 'client', label: '客戶溝通版' },
+  { value: 'learning', label: '學習摘要版' },
+] as const

@@ -1,0 +1,28 @@
+id: meeting
+name: 會議優先
+provider: groq
+sttMode: standard
+modelSettings:
+  sttModel: whisper-large-v3-turbo
+  llmModel: openai/gpt-oss-120b
+realtimeModel: gpt-realtime-whisper
+vad:
+  silenceMs: 600
+  maxDurationMs: 25000
+translation:
+  enabled: true
+sttLanguageHint: auto
+zhPunctuation:
+  enabled: true
+  minChars: 6
+meetingReadable:
+  enabled: true
+  mergeGapMs: 1400
+  minChars: 2
+prompts:
+  systemFile: prompts/system/default.md
+  userFile: prompts/user/default.md
+interaction:
+  mode: conversation
+  displayMode: bilingual
+  defaultRecordTemplate: standard

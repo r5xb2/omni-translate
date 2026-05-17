@@ -1,0 +1,24 @@
+id: bilingual
+name: 中英雙語
+provider: groq
+sttMode: standard
+modelSettings:
+  sttModel: whisper-large-v3-turbo
+  llmModel: openai/gpt-oss-20b
+translation:
+  enabled: true
+sttLanguageHint: auto
+zhPunctuation:
+  enabled: true
+  minChars: 5
+meetingReadable:
+  enabled: false
+  mergeGapMs: 1000
+  minChars: 1
+prompts:
+  systemFile: prompts/system/bilingual.md
+  userFile: prompts/user/bilingual.md
+interaction:
+  mode: conversation
+  displayMode: bilingual
+  defaultRecordTemplate: client

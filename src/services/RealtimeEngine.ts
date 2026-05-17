@@ -7,7 +7,7 @@ export interface RealtimeEngineOptions {
   model: string                // 'gpt-realtime-whisper' | 'gpt-4o-transcribe' | 'gpt-4o-mini-transcribe'
   language?: string            // 預設 'en'
   silenceDurationMs?: number   // 伺服器 VAD 靜音閾值，預設 500
-  onTranscript: (text: string, startedAt: number, endedAt: number) => void
+  onTranscript: (text: string, startedAt: number, endedAt: number, itemId?: string) => void
   onError: (error: Error) => void
   onStateChange: (state: 'connecting' | 'ready' | 'closed') => void
 }

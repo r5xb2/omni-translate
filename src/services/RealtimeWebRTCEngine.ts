@@ -4,6 +4,7 @@ import type { RealtimeEngineOptions } from './RealtimeEngine'
 interface RealtimeEvent {
   type: string
   transcript?: string
+  item_id?: string
   error?: {
     message?: string
     param?: string
@@ -25,6 +26,8 @@ export class RealtimeWebRTCEngine {
   private lastSessionUpdatePayload: string | null = null
   private requiresManualCommit = false
   private commitIntervalId: number | null = null
+  private turnTimesByItemId = new Map<string, { startedAt: number; endedAt: number }>()
+  private pendingTurnQueue: Array<{ startedAt: number; endedAt: number }> = []
 
   async init(options: RealtimeEngineOptions): Promise<void> {
     if (!options.apiKey) throw new Error('OpenAI API Key is required')
@@ -42,8 +45,9 @@ export class RealtimeWebRTCEngine {
     const wasStreaming = this.isStreaming
     this.isStreaming = false
     this.setTracksEnabled(false)
-    if (wasStreaming) {
+    if (wasStreaming && this.requiresManualCommit) {
       this.sendCommitEvent()
+      this.sendClearEvent()
     }
     this.stopManualCommitLoop()
   }
@@ -77,6 +81,8 @@ export class RealtimeWebRTCEngine {
       this.mediaStream.getTracks().forEach((track) => track.stop())
     }
     this.mediaStream = null
+    this.turnTimesByItemId.clear()
+    this.pendingTurnQueue = []
 
     this.options?.onStateChange('closed')
   }
@@ -269,6 +275,11 @@ export class RealtimeWebRTCEngine {
     this.dataChannel.send(JSON.stringify({ type: 'input_audio_buffer.commit' }))
   }
 
+  private sendClearEvent(): void {
+    if (!this.dataChannel || this.dataChannel.readyState !== 'open') return
+    this.dataChannel.send(JSON.stringify({ type: 'input_audio_buffer.clear' }))
+  }
+
   private handleMessage(raw: string): void {
     let event: RealtimeEvent
     try {
@@ -278,27 +289,69 @@ export class RealtimeWebRTCEngine {
     }
 
     switch (event.type) {
-      case 'input_audio_buffer.speech_started':
-        this.speechStartedAt = Date.now()
+      case 'input_audio_buffer.speech_started': {
+        const startedAt = Date.now()
+        this.speechStartedAt = startedAt
+        if (event.item_id) {
+          this.turnTimesByItemId.set(event.item_id, { startedAt, endedAt: startedAt })
+        } else {
+          this.pendingTurnQueue.push({ startedAt, endedAt: startedAt })
+        }
         break
+      }
 
-      case 'input_audio_buffer.speech_stopped':
-        this.speechEndedAt = Date.now()
+      case 'input_audio_buffer.speech_stopped': {
+        const endedAt = Date.now()
+        this.speechEndedAt = endedAt
+        if (event.item_id && this.turnTimesByItemId.has(event.item_id)) {
+          const current = this.turnTimesByItemId.get(event.item_id)!
+          this.turnTimesByItemId.set(event.item_id, {
+            startedAt: current.startedAt,
+            endedAt,
+          })
+        } else if (this.pendingTurnQueue.length > 0) {
+          const last = this.pendingTurnQueue[this.pendingTurnQueue.length - 1]
+          last.endedAt = endedAt
+        }
         break
+      }
 
       case 'conversation.item.input_audio_transcription.completed': {
+        if (!this.isStreaming || this.isDestroyed) {
+          break
+        }
+
         const text = (event.transcript ?? '').trim()
         if (text) {
-          const startedAt = this.speechStartedAt || Date.now()
-          const endedAt = this.speechEndedAt || Date.now()
-          this.options?.onTranscript(text, startedAt, endedAt)
+          const itemId = event.item_id
+          let startedAt = this.speechStartedAt || Date.now()
+          let endedAt = this.speechEndedAt || Date.now()
+
+          if (itemId && this.turnTimesByItemId.has(itemId)) {
+            const turn = this.turnTimesByItemId.get(itemId)!
+            startedAt = turn.startedAt
+            endedAt = turn.endedAt
+            this.turnTimesByItemId.delete(itemId)
+          } else if (this.pendingTurnQueue.length > 0) {
+            const turn = this.pendingTurnQueue.shift()!
+            startedAt = turn.startedAt
+            endedAt = turn.endedAt
+          }
+
+          this.options?.onTranscript(text, startedAt, endedAt, itemId)
         }
         break
       }
 
       case 'error': {
-        if ((event.error?.message ?? '').toLowerCase().includes('input audio buffer is empty')) {
-          // manual commit 在靜音期間可能觸發空 buffer，忽略即可
+        const errorMessage = (event.error?.message ?? '').toLowerCase()
+        const errorCode = (event.error?.code ?? '').toLowerCase()
+        if (
+          errorMessage.includes('input audio buffer is empty')
+          || errorMessage.includes('buffer too small')
+          || errorCode === 'input_audio_buffer_commit_empty'
+        ) {
+          // manual commit 或 pause commit 期間可能觸發空 buffer/過小 buffer，忽略即可
           break
         }
         console.error('[RealtimeWebRTCEngine] error event:', event)

@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useAppStore } from '../../store/AppStore'
+import { useConfigStore } from '../../store/ConfigStore'
 import { RecordingState } from '../../types'
+import { DISPLAY_MODE_OPTIONS, INTERACTION_MODE_OPTIONS } from '../../utils/constants'
 import { formatRelativeTime } from '../../utils/formatters'
 import { Button } from '../shared/Button'
 
@@ -30,6 +32,7 @@ export function ControlBar({ onStart, onPause, onResume, onStop, onOpenSettings 
   const messageCount = useAppStore((s) => s.messages.length)
   const messages = useAppStore((s) => s.messages)
   const sessionStart = useAppStore((s) => s.sessionStartTime) ?? Date.now()
+  const { config, updateConfig } = useConfigStore()
   const [copied, setCopied] = useState(false)
 
   const handleCopy = () => {
@@ -48,7 +51,32 @@ export function ControlBar({ onStart, onPause, onResume, onStop, onOpenSettings 
   }
 
   return (
-    <div className="flex items-center gap-3 border-t bg-white px-4 py-3">
+    <div className="flex flex-col gap-2 border-t bg-white px-4 py-3">
+      <div className="flex items-center gap-2">
+        <label className="text-xs text-gray-500">模式</label>
+        <select
+          value={config.interactionMode}
+          onChange={(e) => updateConfig({ interactionMode: e.target.value as typeof config.interactionMode })}
+          className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700"
+        >
+          {INTERACTION_MODE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+
+        <label className="ml-2 text-xs text-gray-500">顯示</label>
+        <select
+          value={config.displayMode}
+          onChange={(e) => updateConfig({ displayMode: e.target.value as typeof config.displayMode })}
+          className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700"
+        >
+          {DISPLAY_MODE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="flex items-center gap-3">
       <StatusLight state={recordingState} />
 
       {recordingState === 'idle' || recordingState === 'stopping' ? (
@@ -92,6 +120,7 @@ export function ControlBar({ onStart, onPause, onResume, onStop, onOpenSettings 
       <Button variant="ghost" size="sm" onClick={onOpenSettings} aria-label="開啟設定">
         ⚙ 設定
       </Button>
+      </div>
     </div>
   )
 }

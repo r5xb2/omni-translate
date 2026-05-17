@@ -1,7 +1,7 @@
 import { MicVAD } from '@ricky0123/vad-web'
 
 interface AudioEngineOptions {
-  onSpeechEnd: (blob: Blob, speechStartedAt: number, speechEndedAt: number) => void
+  onSpeechEnd: (blob: Blob, speechStartedAt: number, speechEndedAt: number, audioSamples?: Float32Array) => void
   silenceMs?: number
   maxDurationMs?: number
 }
@@ -14,7 +14,7 @@ interface AudioEngineOptions {
 export class AudioEngine {
   private vad: MicVAD | null = null
   private forceSliceTimer: ReturnType<typeof setTimeout> | null = null
-  private onSpeechEnd: (blob: Blob, speechStartedAt: number, speechEndedAt: number) => void = () => {}
+  private onSpeechEnd: (blob: Blob, speechStartedAt: number, speechEndedAt: number, audioSamples?: Float32Array) => void = () => {}
   private maxDurationMs: number = 30_000
   private speechStartedAt: number = 0
 
@@ -49,7 +49,7 @@ export class AudioEngine {
         this.clearForceSliceTimer()
         const blob = this.float32ToWavBlob(audio)
         const speechEndedAt = Date.now()
-        this.onSpeechEnd(blob, this.speechStartedAt, speechEndedAt)
+        this.onSpeechEnd(blob, this.speechStartedAt, speechEndedAt, audio)
       },
     })
   }

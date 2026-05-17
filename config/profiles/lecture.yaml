@@ -1,0 +1,28 @@
+id: lecture
+name: 單向內容記錄
+provider: groq
+sttMode: standard
+modelSettings:
+  sttModel: whisper-large-v3-turbo
+  llmModel: openai/gpt-oss-120b
+realtimeModel: gpt-realtime-whisper
+vad:
+  silenceMs: 900
+  maxDurationMs: 30000
+translation:
+  enabled: true
+sttLanguageHint: auto
+zhPunctuation:
+  enabled: true
+  minChars: 6
+meetingReadable:
+  enabled: true
+  mergeGapMs: 2000
+  minChars: 2
+prompts:
+  systemFile: prompts/system/default.md
+  userFile: prompts/user/default.md
+interaction:
+  mode: lecture
+  displayMode: bilingual
+  defaultRecordTemplate: learning
